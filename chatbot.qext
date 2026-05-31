@@ -1,0 +1,8 @@
+{
+  "name": "💬 שאל את הנתונים",
+  "description": "Claude Chatbot - עברית",
+  "version": "1.0.1",
+  "author": "Claude",
+  "type": "visualization",
+  "main": "chatbot.js"
+}
