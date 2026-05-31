@@ -14,7 +14,7 @@ define(["qlik"], function(qlik) {
         },
 
         paint: function($element, layout) {
-            const backendUrl = "https://silver-snails-lose.loca.lt";
+            const backendUrl = "https://qlik-chatbot-backend.onrender.com";
             const appId = "872ce203-b200-48ef-9582-4f7399299684";
 
             // Clear element
@@ -146,6 +146,8 @@ define(["qlik"], function(qlik) {
                     // Call Backend (which calls Claude)
                     const response = await fetch(backendUrl + "/ask", {
                         method: "POST",
+                        mode: "cors",
+                        credentials: "omit",
                         headers: {
                             "Content-Type": "application/json"
                         },
@@ -181,33 +183,46 @@ define(["qlik"], function(qlik) {
                         }));
 
                         const qMeasures = [{
-                            qDef: { qExpr: query.measure.expression },
+                            qDef: { qDef: query.measure.expression },
                             qLabel: query.measure.label
                         }];
 
-                        const sessionObj = await qApp.createSessionObject({
-                            qInfo: { qType: "GenericObject" },
-                            qHyperCubeDef: {
+                        // Use Capability API createCube (returns data via callback)
+                        const qHyperCube = await new Promise((resolve, reject) => {
+                            let resolved = false;
+                            qApp.createCube({
                                 qDimensions: qDimensions,
                                 qMeasures: qMeasures,
                                 qInitialDataFetch: [{
                                     qHeight: 50,
                                     qWidth: qDimensions.length + qMeasures.length
                                 }]
-                            }
+                            }, function(reply) {
+                                if (resolved) return;
+                                if (reply && reply.qHyperCube &&
+                                    reply.qHyperCube.qDataPages &&
+                                    reply.qHyperCube.qDataPages.length) {
+                                    resolved = true;
+                                    resolve(reply.qHyperCube);
+                                }
+                            });
+                            // Timeout fallback
+                            setTimeout(() => {
+                                if (!resolved) {
+                                    resolved = true;
+                                    reject(new Error("Timeout - לא התקבלו נתונים"));
+                                }
+                            }, 15000);
                         });
-
-                        const layout = await sessionObj.getLayout();
-                        const qHyperCube = layout.qHyperCube;
 
                         if (qHyperCube && qHyperCube.qDataPages && qHyperCube.qDataPages.length) {
                             // Build table
                             const columns = [];
                             qHyperCube.qDimensionInfo.forEach(d =>
-                                columns.push(d.qLabel || d.qName)
+                                columns.push(d.qFallbackTitle || d.qLabel || d.qName)
                             );
                             qHyperCube.qMeasureInfo.forEach(m =>
-                                columns.push(m.qLabel || m.qName)
+                                columns.push(m.qFallbackTitle || m.qLabel || m.qName)
                             );
 
                             let tableHtml = `<table style="width:100%; border-collapse: collapse; font-size: 12px;">
@@ -239,9 +254,9 @@ define(["qlik"], function(qlik) {
                             }
 
                             addMessage(tableHtml);
+                        } else {
+                            addMessage("ℹ️ לא נמצאו נתונים לשאלה זו");
                         }
-
-                        await sessionObj.destroy();
                     }
 
                 } catch (error) {
