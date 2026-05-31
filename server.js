@@ -43,6 +43,12 @@ CRITICAL RULES:
 - Pick 0-2 DIMENSIONS. For "per/by X" (לכל/לפי) questions, add the matching dimension.
 - A value of -1 means "less than 5" (censored), not a real number.
 
+WORD DISAMBIGUATION (these are DIFFERENT - do not confuse):
+- מפונים = evacuees → use the evacuees measure (citizen_id count). NOT casualties.
+- נפגעים = casualties/injured → totalCasualties measure.
+- נפטרים / הרוגים = deceased/killed → totalDeceased or [full name] count.
+- Read the user's word literally. Keep the same word in your interpretation.
+
 MEASURES (use the expression exactly as written):
 - נפגעים (casualties): Sum({<madad={'totalCasualties'}>} val_int)
 - נפטרים (deceased/killed in emergency): Sum({<madad={'totalDeceased'}>} val_int)
