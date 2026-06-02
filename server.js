@@ -1,6 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-const Anthropic = require('@anthropic-ai/sdk');
 require('dotenv').config();
 
 const app = express();
@@ -11,9 +10,27 @@ app.use(cors({
   allowedHeaders: ["Content-Type"]
 }));
 
-const client = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY
-});
+// ── Dual-mode client ──────────────────────────────────────────────
+// If GCP_PROJECT is set → use Vertex AI (Claude on GCP, no API key).
+// Otherwise → fall back to the direct Anthropic API (key-based).
+let client;
+let MODEL;
+
+if (process.env.GCP_PROJECT) {
+  const { AnthropicVertex } = require('@anthropic-ai/vertex-sdk');
+  client = new AnthropicVertex({
+    projectId: process.env.GCP_PROJECT,
+    region: process.env.GCP_REGION || 'us-east5'
+  });
+  // Vertex model id — verify the exact id in Vertex AI Model Garden.
+  MODEL = process.env.GCP_CLAUDE_MODEL || 'claude-opus-4-1@20250805';
+  console.log(`🟢 Mode: Vertex AI (project=${process.env.GCP_PROJECT}, region=${process.env.GCP_REGION || 'us-east5'}, model=${MODEL})`);
+} else {
+  const Anthropic = require('@anthropic-ai/sdk');
+  client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  MODEL = process.env.ANTHROPIC_MODEL || 'claude-opus-4-8';
+  console.log('🟡 Mode: Anthropic direct API (key-based)');
+}
 
 app.post('/ask', async (req, res) => {
   const { question, app_id } = req.body;
@@ -24,7 +41,7 @@ app.post('/ask', async (req, res) => {
 
   try {
     const response = await client.messages.create({
-      model: 'claude-opus-4-8',
+      model: MODEL,
       max_tokens: 800,
       system: `You are a Qlik expert for an Israeli emergency-management app ("חירום").
 The user asks questions in Hebrew. Return ONLY valid JSON (no markdown, no text).
@@ -107,8 +124,9 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-app.listen(5000, () => {
-  console.log('✅ Backend running on http://localhost:5000');
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`✅ Backend running on port ${PORT}`);
   console.log('📍 POST /ask - Ask a question');
   console.log('📍 GET /health - Health check');
 });

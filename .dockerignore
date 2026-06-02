@@ -1,0 +1,12 @@
+node_modules
+npm-debug.log
+.env
+.git
+.gitignore
+*.md
+chatbot.js
+chatbot.qext
+chatbot.zip
+qlik-*.js
+simple-chatbot.js
+*.docx
