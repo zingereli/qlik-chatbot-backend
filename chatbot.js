@@ -191,46 +191,53 @@ define(["qlik"], function(qlik) {
                         }];
 
                         // Build a context set expression from filters (applies to whole cube)
+                        // Uses search/wildcard mode {"*value*"} so "תל אביב" matches "תל אביב - יפו".
                         let qContextSetExpression = "";
                         if (query.filters && query.filters.length) {
-                            const parts = query.filters.map(f =>
-                                f.field + "={'" + String(f.value).replace(/'/g, "") + "'}"
-                            );
+                            const parts = query.filters.map(f => {
+                                const v = String(f.value).replace(/"/g, "");
+                                return f.field + '={"*' + v + '*"}';
+                            });
                             qContextSetExpression = "<" + parts.join(",") + ">";
                             const filterText = query.filters.map(f => f.field + " = " + f.value).join(", ");
                             addMessage("🔎 סינון: " + filterText);
                         }
 
-                        // Use Capability API createCube (returns data via callback)
-                        const qHyperCube = await new Promise((resolve, reject) => {
+                        // Use Capability API createCube. Resolve on data; if no data
+                        // arrives, resolve with the last cube (empty) instead of erroring.
+                        const qHyperCube = await new Promise((resolve) => {
                             let resolved = false;
+                            let lastCube = null;
+                            const finish = (cube) => { if (!resolved) { resolved = true; resolve(cube); } };
                             qApp.createCube({
                                 qDimensions: qDimensions,
                                 qMeasures: qMeasures,
                                 qContextSetExpression: qContextSetExpression,
+                                qSuppressZero: false,
                                 qInitialDataFetch: [{
                                     qHeight: 50,
                                     qWidth: qDimensions.length + qMeasures.length
                                 }]
                             }, function(reply) {
-                                if (resolved) return;
-                                if (reply && reply.qHyperCube &&
-                                    reply.qHyperCube.qDataPages &&
-                                    reply.qHyperCube.qDataPages.length) {
-                                    resolved = true;
-                                    resolve(reply.qHyperCube);
+                                if (resolved || !reply || !reply.qHyperCube) return;
+                                lastCube = reply.qHyperCube;
+                                const pages = reply.qHyperCube.qDataPages;
+                                if (pages && pages.length && pages[0].qMatrix && pages[0].qMatrix.length) {
+                                    finish(reply.qHyperCube);
                                 }
                             });
-                            // Timeout fallback
-                            setTimeout(() => {
-                                if (!resolved) {
-                                    resolved = true;
-                                    reject(new Error("Timeout - לא התקבלו נתונים"));
-                                }
-                            }, 15000);
+                            // Grace fallback: resolve with whatever we have (may be empty)
+                            setTimeout(() => finish(lastCube), 8000);
                         });
 
-                        if (qHyperCube && qHyperCube.qDataPages && qHyperCube.qDataPages.length) {
+                        const hasData = qHyperCube && qHyperCube.qDataPages &&
+                            qHyperCube.qDataPages.length &&
+                            qHyperCube.qDataPages[0].qMatrix &&
+                            qHyperCube.qDataPages[0].qMatrix.length;
+
+                        if (!hasData) {
+                            addMessage("ℹ️ לא נמצאו נתונים לשאלה זו (ייתכן שאין נתונים, או שהסינון/התאריך מצמצם הכל)");
+                        } else {
                             // Build table
                             const columns = [];
                             qHyperCube.qDimensionInfo.forEach(d =>
@@ -269,8 +276,6 @@ define(["qlik"], function(qlik) {
                             }
 
                             addMessage(tableHtml);
-                        } else {
-                            addMessage("ℹ️ לא נמצאו נתונים לשאלה זו");
                         }
                     }
 
