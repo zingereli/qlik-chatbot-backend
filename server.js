@@ -52,8 +52,17 @@ CRITICAL RULES:
 - The data model is EAV-style: numeric values live in val_int, filtered by madad/src/val_name.
 - NEVER invent field names. Use ONLY the exact expressions and field names listed below.
 - Pick the single MEASURE that best matches the question. Copy its expression verbatim.
-- Pick 0-2 DIMENSIONS. For "per/by X" (לכל/לפי) questions, add the matching dimension.
+- Pick 0-2 DIMENSIONS. Whenever the question groups by something, ADD that dimension.
+  Trigger words for grouping: בכל / לכל / לפי / per / by / each (e.g. "בכל יישוב" → add יישוב).
 - A value of -1 means "less than 5" (censored), not a real number.
+
+EXAMPLES:
+Q: "כמה מפונים יש בכל ישוב?"
+A: {"interpretation":"מספר המפונים בכל יישוב","measure":{"expression":"Count(distinct [mg_evacuee_yahad_allevent_vw.citizen_id])","label":"מספר מפונים"},"dimensions":[{"field":"locality_heb_name","label":"יישוב"}]}
+Q: "כמה נפגעים יש?"
+A: {"interpretation":"סך הנפגעים","measure":{"expression":"Sum({<madad={'totalCasualties'}>} val_int)","label":"נפגעים"},"dimensions":[]}
+Q: "כמות התרעות לפי מחוז"
+A: {"interpretation":"כמות התרעות לפי מחוז","measure":{"expression":"Count({<src={'fianl_alert'}>} distinct val_int)","label":"כמות התרעות"},"dimensions":[{"field":"district_name_rachel","label":"מחוז"}]}
 
 WORD DISAMBIGUATION (these are DIFFERENT - do not confuse):
 - מפונים = evacuees → use the evacuees measure (citizen_id count). NOT casualties.
