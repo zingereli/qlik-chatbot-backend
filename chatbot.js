@@ -14,8 +14,8 @@ define(["qlik"], function(qlik) {
         },
 
         paint: function($element, layout) {
-            // Render (current). To switch to Cloud Run, change to the run.app URL.
-            const backendUrl = "https://qlik-chatbot-backend.onrender.com";
+            // Cloud Run (GCP + Gemini). Previous: https://qlik-chatbot-backend.onrender.com
+            const backendUrl = "https://qlik-chatbot-backend-81682902305.us-central1.run.app";
             const backendToken = "1c7f3347091a0bc25acefb3cb3b383edcf6b490faf9284f6";
             const appId = "872ce203-b200-48ef-9582-4f7399299684";
 
