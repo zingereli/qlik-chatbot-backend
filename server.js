@@ -45,24 +45,43 @@ Return format:
 {
   "interpretation": "Short restatement of the question in Hebrew",
   "measure": {"expression": "<exact Qlik expression from MEASURES below>", "label": "<Hebrew label>"},
-  "dimensions": [{"field": "<exact field name from DIMENSIONS below>", "label": "<Hebrew label>"}]
+  "dimensions": [{"field": "<exact field name from DIMENSIONS below>", "label": "<Hebrew label>"}],
+  "filters": [{"field": "<exact field name>", "value": "<exact value as the user wrote it>"}]
 }
 
 CRITICAL RULES:
 - The data model is EAV-style: numeric values live in val_int, filtered by madad/src/val_name.
 - NEVER invent field names. Use ONLY the exact expressions and field names listed below.
 - Pick the single MEASURE that best matches the question. Copy its expression verbatim.
-- Pick 0-2 DIMENSIONS. Whenever the question groups by something, ADD that dimension.
-  Trigger words for grouping: בכל / לכל / לפי / per / by / each (e.g. "בכל יישוב" → add יישוב).
 - A value of -1 means "less than 5" (censored), not a real number.
 
+DIMENSION vs FILTER — this is critical, do not confuse:
+- DIMENSION = "group/break down BY a category" → "בכל X", "לכל X", "לפי X", "per X", "by X".
+  Example: "בכל יישוב" / "לפי מחוז" → add a dimension. dimensions=[...], filters=[].
+- FILTER = "restrict to ONE specific named value" → "ב<שם ספציפי>", "של <שם>", "עבור <שם>".
+  Example: "בירושלים" / "במחוז צפון" / "ברשות באר שבע" → add a filter, NOT a dimension.
+  The filter "value" must be the exact name as it appears (e.g. "ירושלים", "צפון").
+- A question can have BOTH: "כמה מפונים בירושלים לפי חודש" → filter יישוב=ירושלים + dimension חודש.
+- If there is no grouping and no specific value, leave both empty.
+
+FILTERABLE FIELDS (use these field names in "filters"):
+- city/settlement name → locality_heb_name   (e.g. ירושלים, באר שבע, מטולה)
+- local authority name → municipal_short_name
+- district name → district_name_rachel        (e.g. צפון, דרום, דן, ירושלים והמרכז, חיפה)
+- event type → eventType
+- gender → gender, age group → group_age
+
 EXAMPLES:
-Q: "כמה מפונים יש בכל ישוב?"
-A: {"interpretation":"מספר המפונים בכל יישוב","measure":{"expression":"Count(distinct [mg_evacuee_yahad_allevent_vw.citizen_id])","label":"מספר מפונים"},"dimensions":[{"field":"locality_heb_name","label":"יישוב"}]}
+Q: "כמה מפונים יש בכל ישוב?"   (group by)
+A: {"interpretation":"מספר המפונים בכל יישוב","measure":{"expression":"Count(distinct [mg_evacuee_yahad_allevent_vw.citizen_id])","label":"מספר מפונים"},"dimensions":[{"field":"locality_heb_name","label":"יישוב"}],"filters":[]}
+Q: "כמה מפונים יש בירושלים?"   (filter to one city)
+A: {"interpretation":"מספר המפונים בירושלים","measure":{"expression":"Count(distinct [mg_evacuee_yahad_allevent_vw.citizen_id])","label":"מספר מפונים"},"dimensions":[],"filters":[{"field":"locality_heb_name","value":"ירושלים"}]}
 Q: "כמה נפגעים יש?"
-A: {"interpretation":"סך הנפגעים","measure":{"expression":"Sum({<madad={'totalCasualties'}>} val_int)","label":"נפגעים"},"dimensions":[]}
-Q: "כמות התרעות לפי מחוז"
-A: {"interpretation":"כמות התרעות לפי מחוז","measure":{"expression":"Count({<src={'fianl_alert'}>} distinct val_int)","label":"כמות התרעות"},"dimensions":[{"field":"district_name_rachel","label":"מחוז"}]}
+A: {"interpretation":"סך הנפגעים","measure":{"expression":"Sum({<madad={'totalCasualties'}>} val_int)","label":"נפגעים"},"dimensions":[],"filters":[]}
+Q: "כמות התרעות לפי מחוז"   (group by)
+A: {"interpretation":"כמות התרעות לפי מחוז","measure":{"expression":"Count({<src={'fianl_alert'}>} distinct val_int)","label":"כמות התרעות"},"dimensions":[{"field":"district_name_rachel","label":"מחוז"}],"filters":[]}
+Q: "כמה הרוגים במחוז צפון?"   (filter to one district)
+A: {"interpretation":"מספר ההרוגים במחוז צפון","measure":{"expression":"Count(distinct [full name])","label":"הרוגים"},"dimensions":[],"filters":[{"field":"district_name_rachel","value":"צפון"}]}
 
 WORD DISAMBIGUATION (these are DIFFERENT - do not confuse):
 - מפונים = evacuees → use the evacuees measure (citizen_id count). NOT casualties.

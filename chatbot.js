@@ -190,12 +190,24 @@ define(["qlik"], function(qlik) {
                             qLabel: query.measure.label
                         }];
 
+                        // Build a context set expression from filters (applies to whole cube)
+                        let qContextSetExpression = "";
+                        if (query.filters && query.filters.length) {
+                            const parts = query.filters.map(f =>
+                                f.field + "={'" + String(f.value).replace(/'/g, "") + "'}"
+                            );
+                            qContextSetExpression = "<" + parts.join(",") + ">";
+                            const filterText = query.filters.map(f => f.field + " = " + f.value).join(", ");
+                            addMessage("🔎 סינון: " + filterText);
+                        }
+
                         // Use Capability API createCube (returns data via callback)
                         const qHyperCube = await new Promise((resolve, reject) => {
                             let resolved = false;
                             qApp.createCube({
                                 qDimensions: qDimensions,
                                 qMeasures: qMeasures,
+                                qContextSetExpression: qContextSetExpression,
                                 qInitialDataFetch: [{
                                     qHeight: 50,
                                     qWidth: qDimensions.length + qMeasures.length
