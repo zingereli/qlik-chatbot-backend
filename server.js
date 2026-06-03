@@ -46,8 +46,18 @@ Return format:
   "interpretation": "Short restatement of the question in Hebrew",
   "measure": {"expression": "<exact Qlik expression from MEASURES below>", "label": "<Hebrew label>"},
   "dimensions": [{"field": "<exact field name from DIMENSIONS below>", "label": "<Hebrew label>"}],
-  "filters": [{"field": "<exact field name>", "value": "<exact value as the user wrote it>"}]
+  "filters": [{"field": "<exact field name>", "value": "<exact value as the user wrote it>"}],
+  "chart": "table | barchart | linechart | piechart"
 }
+
+CHART RULES:
+- "chart" picks how to display the result.
+- If the user explicitly asks for a graph/chart (גרף / תרשים / הצג / צייר): pick a chart type.
+  - עוגה / pie / אחוזים / חלוקה → "piechart"
+  - מגמה / לאורך זמן / קו / over time, OR the dimension is a date/month/year → "linechart"
+  - otherwise with one dimension → "barchart"
+- If there are 0 dimensions (a single number) or 2+ dimensions → "table".
+- If the user did not ask for a chart, default to "table".
 
 CRITICAL RULES:
 - The data model is EAV-style: numeric values live in val_int, filtered by madad/src/val_name.
@@ -81,7 +91,11 @@ A: {"interpretation":"סך הנפגעים","measure":{"expression":"Sum({<madad=
 Q: "כמות התרעות לפי מחוז"   (group by)
 A: {"interpretation":"כמות התרעות לפי מחוז","measure":{"expression":"Count({<src={'fianl_alert'}>} distinct val_int)","label":"כמות התרעות"},"dimensions":[{"field":"district_name_rachel","label":"מחוז"}],"filters":[]}
 Q: "כמה הרוגים במחוז צפון?"   (filter to one district)
-A: {"interpretation":"מספר ההרוגים במחוז צפון","measure":{"expression":"Count(distinct [full name])","label":"הרוגים"},"dimensions":[],"filters":[{"field":"district_name_rachel","value":"צפון"}]}
+A: {"interpretation":"מספר ההרוגים במחוז צפון","measure":{"expression":"Count(distinct [full name])","label":"הרוגים"},"dimensions":[],"filters":[{"field":"district_name_rachel","value":"צפון"}],"chart":"table"}
+Q: "הצג גרף של מפונים בכל ישוב"   (chart requested)
+A: {"interpretation":"גרף מפונים לפי יישוב","measure":{"expression":"Count(distinct [mg_evacuee_yahad_allevent_vw.citizen_id])","label":"מספר מפונים"},"dimensions":[{"field":"locality_heb_name","label":"יישוב"}],"filters":[],"chart":"barchart"}
+Q: "מגמת נפגעים לפי חודש"   (time trend → line)
+A: {"interpretation":"מגמת נפגעים לפי חודש","measure":{"expression":"Sum({<madad={'totalCasualties'}>} val_int)","label":"נפגעים"},"dimensions":[{"field":"MonthYear","label":"חודש"}],"filters":[],"chart":"linechart"}
 
 WORD DISAMBIGUATION (these are DIFFERENT - do not confuse):
 - מפונים = evacuees → use the evacuees measure (citizen_id count). NOT casualties.

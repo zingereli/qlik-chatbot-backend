@@ -241,8 +241,32 @@ define(["qlik"], function(qlik) {
                             qHyperCube.qDataPages[0].qMatrix &&
                             qHyperCube.qDataPages[0].qMatrix.length;
 
+                        const wantChart = query.chart && query.chart !== "table" && qDimensions.length >= 1;
+
                         if (!hasData) {
                             addMessage("ℹ️ לא נמצאו נתונים לשאלה זו (ייתכן שאין נתונים, או שהסינון/התאריך מצמצם הכל)");
+                        } else if (wantChart) {
+                            // Render a native Qlik chart (barchart / linechart / piechart)
+                            const chartId = "chart_" + Date.now();
+                            const msg = document.createElement("div");
+                            msg.style.cssText = "display:flex; justify-content:flex-start; margin-bottom:8px;";
+                            const box = document.createElement("div");
+                            box.style.cssText = "background:white; border:1px solid #e0e0e0; border-radius:8px; padding:8px; width:92%;";
+                            const chartDiv = document.createElement("div");
+                            chartDiv.id = chartId;
+                            chartDiv.style.cssText = "width:100%; height:300px;";
+                            box.appendChild(chartDiv);
+                            msg.appendChild(box);
+                            messagesDiv.appendChild(msg);
+                            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+                            const cols = [];
+                            query.dimensions.forEach(d => cols.push({ qDef: { qFieldDefs: [d.field] }, qLabel: d.label }));
+                            cols.push({ qDef: { qDef: measureExpr }, qLabel: query.measure.label });
+
+                            qApp.visualization.create(query.chart, cols, {})
+                                .then(function(vis) { vis.show(chartId); })
+                                .catch(function(e) { addMessage("⚠️ לא ניתן לצייר גרף: " + (e && e.message ? e.message : e)); });
                         } else {
                             // Build table
                             const columns = [];
