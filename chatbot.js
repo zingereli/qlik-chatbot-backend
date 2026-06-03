@@ -185,23 +185,30 @@ define(["qlik"], function(qlik) {
                             qLabel: d.label
                         }));
 
-                        const qMeasures = [{
-                            qDef: { qDef: query.measure.expression },
-                            qLabel: query.measure.label
-                        }];
-
-                        // Build a context set expression from filters (applies to whole cube)
-                        // Uses search/wildcard mode {"*value*"} so "תל אביב" matches "תל אביב - יפו".
-                        let qContextSetExpression = "";
+                        // Inject filters directly into the measure expression as set
+                        // analysis (search/wildcard mode), so "תל אביב" matches "תל אביב - יפו".
+                        // createCube ignores qContextSetExpression, so we bake it into the expr.
+                        let measureExpr = query.measure.expression;
                         if (query.filters && query.filters.length) {
-                            const parts = query.filters.map(f => {
+                            const setStr = query.filters.map(f => {
                                 const v = String(f.value).replace(/"/g, "");
                                 return f.field + '={"*' + v + '*"}';
-                            });
-                            qContextSetExpression = "<" + parts.join(",") + ">";
+                            }).join(",");
+                            if (measureExpr.indexOf("{<") !== -1) {
+                                // merge into the first existing set modifier
+                                measureExpr = measureExpr.replace("{<", "{<" + setStr + ", ");
+                            } else {
+                                // insert a set modifier right after the first aggregation paren
+                                measureExpr = measureExpr.replace("(", "({<" + setStr + ">} ");
+                            }
                             const filterText = query.filters.map(f => f.field + " = " + f.value).join(", ");
                             addMessage("🔎 סינון: " + filterText);
                         }
+
+                        const qMeasures = [{
+                            qDef: { qDef: measureExpr },
+                            qLabel: query.measure.label
+                        }];
 
                         // Use Capability API createCube. Resolve on data; if no data
                         // arrives, resolve with the last cube (empty) instead of erroring.
@@ -212,7 +219,6 @@ define(["qlik"], function(qlik) {
                             qApp.createCube({
                                 qDimensions: qDimensions,
                                 qMeasures: qMeasures,
-                                qContextSetExpression: qContextSetExpression,
                                 qSuppressZero: false,
                                 qInitialDataFetch: [{
                                     qHeight: 50,
