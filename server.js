@@ -4,11 +4,38 @@ require('dotenv').config();
 
 const app = express();
 app.use(express.json());
+
+// ── CORS: restrict to the Qlik tenant origin (ALLOWED_ORIGIN), default "*" ──
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*";
 app.use(cors({
-  origin: "*",
+  origin: ALLOWED_ORIGIN,
   methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type"]
+  allowedHeaders: ["Content-Type", "X-Backend-Token"]
 }));
+
+// ── Simple in-memory rate limiting (per IP) ──
+const RATE_MAX = parseInt(process.env.RATE_MAX || "30", 10);   // requests
+const RATE_WINDOW_MS = 60 * 1000;                               // per minute
+const hits = new Map();
+function rateLimit(req, res, next) {
+  const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
+  const now = Date.now();
+  const arr = (hits.get(ip) || []).filter(t => now - t < RATE_WINDOW_MS);
+  if (arr.length >= RATE_MAX) {
+    return res.status(429).json({ error: "Too many requests — try again shortly" });
+  }
+  arr.push(now);
+  hits.set(ip, arr);
+  next();
+}
+
+// ── Optional app-level token: if BACKEND_TOKEN is set, require it on /ask ──
+const BACKEND_TOKEN = process.env.BACKEND_TOKEN;
+function requireToken(req, res, next) {
+  if (!BACKEND_TOKEN) return next(); // disabled if not configured
+  if (req.headers["x-backend-token"] === BACKEND_TOKEN) return next();
+  return res.status(401).json({ error: "Unauthorized" });
+}
 
 // ── Dual-mode client ──────────────────────────────────────────────
 // If GCP_PROJECT is set → use Vertex AI (Claude on GCP, no API key).
@@ -32,7 +59,7 @@ if (process.env.GCP_PROJECT) {
   console.log('🟡 Mode: Anthropic direct API (key-based)');
 }
 
-app.post('/ask', async (req, res) => {
+app.post('/ask', rateLimit, requireToken, async (req, res) => {
   const { question, app_id } = req.body;
 
   if (!question) {

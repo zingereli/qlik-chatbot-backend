@@ -14,7 +14,9 @@ define(["qlik"], function(qlik) {
         },
 
         paint: function($element, layout) {
+            // Render (current). To switch to Cloud Run, change to the run.app URL.
             const backendUrl = "https://qlik-chatbot-backend.onrender.com";
+            const backendToken = "1c7f3347091a0bc25acefb3cb3b383edcf6b490faf9284f6";
             const appId = "872ce203-b200-48ef-9582-4f7399299684";
 
             // Clear element
@@ -149,7 +151,8 @@ define(["qlik"], function(qlik) {
                         mode: "cors",
                         credentials: "omit",
                         headers: {
-                            "Content-Type": "application/json"
+                            "Content-Type": "application/json",
+                            "X-Backend-Token": backendToken
                         },
                         body: JSON.stringify({
                             question: question,
