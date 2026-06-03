@@ -37,40 +37,8 @@ function requireToken(req, res, next) {
   return res.status(401).json({ error: "Unauthorized" });
 }
 
-// ── Dual-mode client ──────────────────────────────────────────────
-// If GCP_PROJECT is set → use Vertex AI (Claude on GCP, no API key).
-// Otherwise → fall back to the direct Anthropic API (key-based).
-let client;
-let MODEL;
-
-if (process.env.GCP_PROJECT) {
-  const { AnthropicVertex } = require('@anthropic-ai/vertex-sdk');
-  client = new AnthropicVertex({
-    projectId: process.env.GCP_PROJECT,
-    region: process.env.GCP_REGION || 'us-east5'
-  });
-  // Vertex model id — verify the exact id in Vertex AI Model Garden.
-  MODEL = process.env.GCP_CLAUDE_MODEL || 'claude-opus-4-1@20250805';
-  console.log(`🟢 Mode: Vertex AI (project=${process.env.GCP_PROJECT}, region=${process.env.GCP_REGION || 'us-east5'}, model=${MODEL})`);
-} else {
-  const Anthropic = require('@anthropic-ai/sdk');
-  client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  MODEL = process.env.ANTHROPIC_MODEL || 'claude-opus-4-8';
-  console.log('🟡 Mode: Anthropic direct API (key-based)');
-}
-
-app.post('/ask', rateLimit, requireToken, async (req, res) => {
-  const { question, app_id } = req.body;
-
-  if (!question) {
-    return res.status(400).json({ error: 'Question is required' });
-  }
-
-  try {
-    const response = await client.messages.create({
-      model: MODEL,
-      max_tokens: 800,
-      system: `You are a Qlik expert for an Israeli emergency-management app ("חירום").
+// ── System prompt (shared across all model backends) ──
+const SYSTEM_PROMPT = `You are a Qlik expert for an Israeli emergency-management app ("חירום").
 The user asks questions in Hebrew. Return ONLY valid JSON (no markdown, no text).
 
 Return format:
@@ -116,30 +84,74 @@ DIMENSIONS (use the field name exactly):
 - שנה (year): Year
 - סוג אירוע (event type): eventType
 - קבוצת גיל (age group): group_age
-- מגדר (gender): gender`,
-      messages: [{ role: 'user', content: question }]
+- מגדר (gender): gender`;
+
+// ── Tri-mode model backend ────────────────────────────────────────
+// 1) GEMINI_MODEL set  → Gemini on Vertex (Google first-party, no entitlement)
+// 2) GCP_PROJECT set   → Claude on Vertex AI
+// 3) else              → Anthropic direct API (key-based)
+// callModel(question) → { text, usage }
+let callModel;
+
+if (process.env.GEMINI_MODEL) {
+  const { VertexAI } = require('@google-cloud/vertexai');
+  const vertexAI = new VertexAI({
+    project: process.env.GCP_PROJECT,
+    location: process.env.GCP_REGION || 'us-central1'
+  });
+  const model = vertexAI.getGenerativeModel({
+    model: process.env.GEMINI_MODEL,
+    systemInstruction: { role: 'system', parts: [{ text: SYSTEM_PROMPT }] },
+    generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 800, temperature: 0 }
+  });
+  callModel = async (question) => {
+    const result = await model.generateContent({
+      contents: [{ role: 'user', parts: [{ text: question }] }]
     });
+    const cand = result.response.candidates[0];
+    const text = cand.content.parts.map(p => p.text || '').join('');
+    const u = result.response.usageMetadata || {};
+    return { text, usage: { input_tokens: u.promptTokenCount || 0, output_tokens: u.candidatesTokenCount || 0, cache_read_tokens: 0 } };
+  };
+  console.log(`🔵 Mode: Gemini on Vertex (model=${process.env.GEMINI_MODEL}, region=${process.env.GCP_REGION || 'us-central1'})`);
+} else if (process.env.GCP_PROJECT) {
+  const { AnthropicVertex } = require('@anthropic-ai/vertex-sdk');
+  const client = new AnthropicVertex({ projectId: process.env.GCP_PROJECT, region: process.env.GCP_REGION || 'us-east5' });
+  const MODEL = process.env.GCP_CLAUDE_MODEL || 'claude-opus-4-1@20250805';
+  callModel = async (question) => {
+    const r = await client.messages.create({ model: MODEL, max_tokens: 800, system: SYSTEM_PROMPT, messages: [{ role: 'user', content: question }] });
+    return { text: r.content[0].text, usage: { input_tokens: r.usage.input_tokens, output_tokens: r.usage.output_tokens, cache_read_tokens: r.usage.cache_read_input_tokens || 0 } };
+  };
+  console.log(`🟢 Mode: Vertex Claude (model=${MODEL})`);
+} else {
+  const Anthropic = require('@anthropic-ai/sdk');
+  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const MODEL = process.env.ANTHROPIC_MODEL || 'claude-opus-4-8';
+  callModel = async (question) => {
+    const r = await client.messages.create({ model: MODEL, max_tokens: 800, system: SYSTEM_PROMPT, messages: [{ role: 'user', content: question }] });
+    return { text: r.content[0].text, usage: { input_tokens: r.usage.input_tokens, output_tokens: r.usage.output_tokens, cache_read_tokens: r.usage.cache_read_input_tokens || 0 } };
+  };
+  console.log('🟡 Mode: Anthropic direct API (key-based)');
+}
 
-    const responseText = response.content[0].text;
+app.post('/ask', rateLimit, requireToken, async (req, res) => {
+  const { question } = req.body;
+
+  if (!question) {
+    return res.status(400).json({ error: 'Question is required' });
+  }
+
+  try {
+    const { text, usage } = await callModel(question);
+
     let query;
-
     try {
-      query = JSON.parse(responseText);
+      query = JSON.parse(text);
     } catch (e) {
-      return res.status(400).json({
-        error: 'Failed to parse Claude response',
-        raw: responseText
-      });
+      return res.status(400).json({ error: 'Failed to parse model response', raw: text });
     }
 
-    res.json({
-      query,
-      cache_stats: {
-        cache_read_tokens: response.usage.cache_read_input_tokens || 0,
-        input_tokens: response.usage.input_tokens,
-        output_tokens: response.usage.output_tokens
-      }
-    });
+    res.json({ query, cache_stats: usage });
 
   } catch (error) {
     console.error('Error:', error);
