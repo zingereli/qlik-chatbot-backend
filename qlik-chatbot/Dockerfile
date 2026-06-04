@@ -7,7 +7,7 @@ COPY package*.json ./
 RUN npm install --omit=dev
 
 # Copy the rest of the backend
-COPY server.js ./
+COPY server.js prompts.js ./
 
 # Cloud Run provides PORT; the app reads process.env.PORT
 ENV NODE_ENV=production

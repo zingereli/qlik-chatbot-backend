@@ -1,0 +1,14 @@
+# Controls what `gcloud run deploy --source .` uploads to Cloud Build.
+# We only need the backend files; everything else (extension JS, SQL, docx,
+# python scripts, zips) is irrelevant to the container and should not be uploaded.
+
+# 1) ignore everything
+*
+
+# 2) re-include only what the Docker build needs
+!server.js
+!prompts.js
+!package.json
+!package-lock.json
+!Dockerfile
+!.dockerignore

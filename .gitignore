@@ -1,4 +1,9 @@
 node_modules/
+docgen/node_modules/
 .env
 .env.local
 *.log
+npm-debug.log
+
+# Word temp/lock files
+~$*.docx
