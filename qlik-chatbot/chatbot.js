@@ -53,15 +53,23 @@ define(["qlik"], function(qlik) {
                 direction: rtl;
             `;
 
-            // Header
+            // Header (title + "new conversation" reset button)
             const header = document.createElement("div");
             header.style.cssText = `
                 background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                 color: white;
                 padding: 16px;
                 box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                display: flex; align-items: center; justify-content: space-between;
             `;
-            header.innerHTML = "<h2 style='margin: 0; font-size: 18px;'>💬 שאל את הנתונים</h2>";
+            const headerTitle = document.createElement("h2");
+            headerTitle.style.cssText = "margin:0; font-size:18px;";
+            headerTitle.textContent = "💬 שאל את הנתונים";
+            const resetBtn = document.createElement("button");
+            resetBtn.textContent = "🔄 שיחה חדשה";
+            resetBtn.style.cssText = "background:rgba(255,255,255,0.2); color:white; border:1px solid rgba(255,255,255,0.45); border-radius:6px; padding:5px 10px; cursor:pointer; font-size:12px; font-family:inherit; white-space:nowrap;";
+            header.appendChild(headerTitle);
+            header.appendChild(resetBtn);
 
             // Messages area
             const messagesDiv = document.createElement("div");
@@ -115,46 +123,43 @@ define(["qlik"], function(qlik) {
             inputArea.appendChild(input);
             inputArea.appendChild(button);
 
-            // Output-format selector. "auto" = let the model decide; otherwise the
-            // user forces a specific Qlik visualization type.
-            const CHART_OPTIONS = [
-                ["auto", "אוטומטי (לפי השאלה)"],
-                ["table", "טבלה"],
-                ["barchart", "גרף עמודות"],
-                ["linechart", "גרף קו"],
-                ["piechart", "גרף עוגה"],
-                ["combochart", "גרף משולב"],
-                ["scatterplot", "תרשים פיזור"],
-                ["kpi", "מדד (KPI)"],
-                ["gauge", "מד מחוג"],
-                ["treemap", "מפת עץ"],
-                ["heatmap", "מפת חום"],
-                ["pivot-table", "טבלת ציר"],
-                ["waterfallchart", "תרשים מפל"],
-                ["histogram", "היסטוגרמה"],
-                ["distributionplot", "תרשים התפלגות"],
-                ["boxplot", "תרשים קופסה"]
-            ];
-            const formatBar = document.createElement("div");
-            formatBar.style.cssText = "display:flex; align-items:center; gap:8px; padding:8px 16px; background:white; border-top:1px solid #eee;";
-            const fbLabel = document.createElement("span");
-            fbLabel.textContent = "תצוגה:";
-            fbLabel.style.cssText = "color:#666; font-weight:600; font-size:13px; white-space:nowrap;";
-            const chartSelect = document.createElement("select");
-            chartSelect.style.cssText = "flex:1; padding:6px 8px; border:1px solid #ddd; border-radius:6px; font-family:inherit; font-size:13px; background:white;";
-            CHART_OPTIONS.forEach(function(opt){ const o=document.createElement("option"); o.value=opt[0]; o.textContent=opt[1]; chartSelect.appendChild(o); });
-            formatBar.appendChild(fbLabel);
-            formatBar.appendChild(chartSelect);
-
             container.appendChild(header);
             container.appendChild(messagesDiv);
-            container.appendChild(formatBar);
             container.appendChild(inputArea);
 
             $element.append(container);
 
             // State
             let isLoading = false;
+            // Client-side conversation memory (this session only). Each entry holds the
+            // user's question + a compact description of the query that was built, so a
+            // follow-up ("ורק לנשים", "ולמה ירד?") can be resolved against prior context.
+            let history = [];
+
+            // Prepend recent conversation context to a question (follow-up support).
+            function buildContextualQuestion(q) {
+                if (!history.length) return q;
+                const recent = history.slice(-4);
+                let ctx = "הקשר השיחה עד כה (השתמש בו רק אם השאלה הנוכחית היא המשך/חידוד של הקודמת; אחרת התעלם):\n";
+                recent.forEach(function(h) {
+                    ctx += '- שאלה: "' + h.question + '"' + (h.detail ? "  [" + h.detail + "]" : "") + "\n";
+                });
+                ctx += '\nהשאלה הנוכחית: "' + q + '"\n';
+                ctx += "אם זו שאלת המשך — בנה את השאילתה על בסיס הקודמת ושנה רק את מה שהשתנה. החזר JSON כרגיל.";
+                return ctx;
+            }
+
+            // Compact one-line description of a resolved query (for the context block).
+            function summarizeQuery(query) {
+                if (!query) return "";
+                if (query.mode === "analysis") return "ניתוח: " + (query.plan_intro || query.interpretation || "");
+                const parts = [];
+                if (query.interpretation) parts.push(query.interpretation);
+                if (query.measure && query.measure.expression) parts.push("measure=" + query.measure.expression);
+                if (query.dimensions && query.dimensions.length) parts.push("dims=" + query.dimensions.map(function(d){return d.field;}).join(","));
+                if (query.chart) parts.push("chart=" + query.chart);
+                return parts.join(" | ");
+            }
 
             // ── UI helpers ───────────────────────────────────────────────────
             function escapeHtml(s) {
@@ -197,6 +202,18 @@ define(["qlik"], function(qlik) {
             const isTimeDim = (d) =>
                 /year|quarter|month|date/i.test(d.field) || /שנה|רבעון|חודש|תאריך/.test(d.label || "");
 
+            // Make a measure independent of the user's current selections in the Qlik
+            // sheet, by switching the set identifier to "1" (all records). Without this,
+            // a stray selection (e.g. a year or gender filter the user clicked) silently
+            // constrains every answer — empty results / truncated trends.
+            function ignoreSelections(expr) {
+                if (!expr) return expr;
+                if (expr.indexOf("{<") !== -1) return expr.replace(/\{</g, "{1<");
+                if (expr.indexOf("{1<") !== -1 || expr.indexOf("{1}") !== -1) return expr;
+                // no set modifier → add one that ignores selections
+                return expr.replace("(", "({1} ");
+            }
+
             // Bake query.filters into a measure expression as set analysis (query mode only).
             function injectFilters(expr, filters) {
                 if (!filters || !filters.length) return expr;
@@ -210,6 +227,27 @@ define(["qlik"], function(qlik) {
                     ? expr.replace("{<", "{<" + setStr + ", ")
                     : expr.replace("(", "({<" + setStr + ">} ");
             }
+
+            // Minimum dimensions/measures each chart type needs to render properly.
+            const CHART_REQS = {
+                barchart: { d: 1, m: 1 }, linechart: { d: 1, m: 1 }, piechart: { d: 1, m: 1 },
+                treemap: { d: 1, m: 1 }, waterfallchart: { d: 1, m: 1 }, "pivot-table": { d: 1, m: 1 },
+                distributionplot: { d: 1, m: 1 }, boxplot: { d: 1, m: 1 }, histogram: { d: 1, m: 0 },
+                heatmap: { d: 2, m: 1 }, combochart: { d: 1, m: 2 }, scatterplot: { d: 0, m: 2 },
+                kpi: { d: 0, m: 1 }, gauge: { d: 0, m: 1 }, table: { d: 0, m: 0 }
+            };
+            function chartFits(type, nDims, nMeas) {
+                const r = CHART_REQS[type];
+                if (!r) return true;
+                return nDims >= r.d && nMeas >= r.m;
+            }
+            // Qlik number format for a measure, by unit hint.
+            function numFmtFor(unit) {
+                if (unit === "percent") return { qType: "F", qFmt: "#,##0.0", qDec: ".", qThou: "," };
+                if (unit === "currency") return { qType: "F", qFmt: "#,##0", qDec: ".", qThou: "," };
+                return { qType: "F", qFmt: "#,##0.##", qDec: ".", qThou: "," };
+            }
+            function unitSuffix(unit) { return unit === "percent" ? "%" : (unit === "currency" ? " ₪" : ""); }
 
             // Convert a hypercube into a simple {hasData, columns, rows, sizeY}.
             function cubeToResult(hc) {
@@ -230,14 +268,14 @@ define(["qlik"], function(qlik) {
 
             // Run one hypercube; resolves with cubeToResult(...). Time dims sort ascending
             // by value; categorical dims sort by the measure (descending).
-            function runCube(measureExpr, dimensions, measureLabel) {
+            function runCube(measureExpr, dimensions, measureLabel, unit) {
                 const dims = dimensions || [];
                 const hasTime = dims.some(isTimeDim);
                 const qDimensions = dims.map(d => ({
-                    qDef: { qFieldDefs: [d.field], qSortCriterias: [{ qSortByNumeric: 1, qSortByAscii: 1 }] },
+                    qDef: { qFieldDefs: [d.field], qFieldLabels: [d.label], qSortCriterias: [{ qSortByNumeric: 1, qSortByAscii: 1 }] },
                     qLabel: d.label
                 }));
-                const qMeasures = [{ qDef: { qDef: measureExpr, qSortBy: { qSortByNumeric: -1 } }, qLabel: measureLabel }];
+                const qMeasures = [{ qDef: { qDef: measureExpr, qLabel: measureLabel, qSortBy: { qSortByNumeric: -1 }, qNumFormat: numFmtFor(unit) }, qLabel: measureLabel }];
                 const nDims = qDimensions.length;
                 let order = [];
                 if (nDims === 0 || hasTime) { for (let i = 0; i <= nDims; i++) order.push(i); }
@@ -265,7 +303,7 @@ define(["qlik"], function(qlik) {
             // Render a native Qlik chart into a fresh bubble. Supports any Qlik
             // visualization type; if the type doesn't fit the data, it removes the
             // empty chart and falls back to a table (using the already-fetched res).
-            function renderChart(chartType, dimensions, measureExpr, measureLabel, res) {
+            function renderChart(chartType, dimensions, measureExpr, measureLabel, res, unit) {
                 const chartId = "chart_" + Date.now() + "_" + Math.floor(Math.random() * 10000);
                 const box = document.createElement("div");
                 box.style.cssText = "background:white; border:1px solid #e0e0e0; border-radius:8px; padding:8px; width:92%;";
@@ -279,27 +317,39 @@ define(["qlik"], function(qlik) {
                 messagesDiv.appendChild(wrap);
                 messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
+                // Clean labels: friendly axis title (qFieldLabels) + a measure label that
+                // carries the unit, plus a number format — so no raw field names or raw
+                // expressions leak into the axis/tooltip.
+                const dims = dimensions || [];
+                const mLabel = measureLabel + (unit === "percent" ? " (%)" : unit === "currency" ? " (₪)" : "");
                 const cols = [];
-                (dimensions || []).forEach(d => cols.push({ qDef: { qFieldDefs: [d.field] }, qLabel: d.label }));
-                cols.push({ qDef: { qDef: measureExpr }, qLabel: measureLabel });
+                dims.forEach(d => cols.push({ qDef: { qFieldDefs: [d.field], qFieldLabels: [d.label] }, qLabel: d.label }));
+                cols.push({ qDef: { qDef: measureExpr, qLabel: mLabel, qNumFormat: numFmtFor(unit) }, qLabel: mLabel });
                 qApp.visualization.create(chartType, cols, {})
                     .then(v => v.show(chartId))
                     .catch(e => {
                         wrap.remove();
                         addMessage("⚠️ סוג התצוגה \"" + chartType + "\" לא מתאים לנתונים האלה — מציג טבלה במקום.");
-                        if (res && res.hasData) addPanel(tableHtml(res.columns, res.rows, res.sizeY, 10));
+                        if (res && res.hasData) addPanel(tableHtml(res.columns, res.rows, res.sizeY, 10, { nDims: dims.length, unit: unit }));
                     });
             }
 
-            // Build an HTML table string from columns + rows.
-            function tableHtml(columns, rows, sizeY, maxRows) {
+            // Build an HTML table string. opts.nDims marks how many leading columns are
+            // dimensions; opts.unit appends % / ₪ to the measure columns (the rest).
+            function tableHtml(columns, rows, sizeY, maxRows, opts) {
                 const limit = maxRows || 10;
+                const nDims = opts && opts.nDims != null ? opts.nDims : -1;
+                const sfx = opts && opts.unit ? unitSuffix(opts.unit) : "";
                 let html = '<table style="width:100%; border-collapse:collapse; font-size:12px;"><tr style="background:#f5f5f5;">';
                 columns.forEach(c => html += `<th style="padding:8px; text-align:right; border-bottom:1px solid #ddd; font-weight:600;">${escapeHtml(c)}</th>`);
                 html += "</tr>";
                 rows.slice(0, limit).forEach(r => {
                     html += "<tr>";
-                    r.forEach(v => html += `<td style="padding:8px; text-align:right; border-bottom:1px solid #f0f0f0;">${escapeHtml(v)}</td>`);
+                    r.forEach((v, ci) => {
+                        let cell = escapeHtml(v);
+                        if (sfx && nDims >= 0 && ci >= nDims && v !== "" && v != null) cell += sfx;
+                        html += `<td style="padding:8px; text-align:right; border-bottom:1px solid #f0f0f0;">${cell}</td>`;
+                    });
                     html += "</tr>";
                 });
                 html += "</table>";
@@ -359,7 +409,7 @@ define(["qlik"], function(qlik) {
                     const label = q.label || (q.measure.label || "");
                     let res;
                     try {
-                        res = await runCube(q.measure.expression, q.dimensions || [], q.measure.label || "");
+                        res = await runCube(ignoreSelections(q.measure.expression), q.dimensions || [], q.measure.label || "");
                     } catch (e) {
                         res = { hasData: false, columns: [], rows: [], sizeY: 0 };
                     }
@@ -389,25 +439,32 @@ define(["qlik"], function(qlik) {
                 renderSupporting(items);
             }
 
-            // Run a single query (lookup mode): chart, table, or "no data".
-            // chartOverride: user's chosen output type ("auto" = use the model's choice).
-            async function runQuery(query, chartOverride) {
+            // Run a single query (lookup mode). The MODEL decides the output format
+            // via query.chart (table or a specific chart); we just render it, with a
+            // graceful fallback to a table if the chosen chart doesn't fit the data.
+            async function runQuery(query) {
                 addMessage("📊 " + (query.interpretation || "מעבד..."));
-                const measureExpr = injectFilters(query.measure.expression, query.filters);
+                const measureExpr = ignoreSelections(injectFilters(query.measure.expression, query.filters));
                 if (query.filters && query.filters.length) {
                     addMessage("🔎 סינון: " + query.filters.map(f => f.field + " = " + f.value).join(", "));
                 }
-                const res = await runCube(measureExpr, query.dimensions || [], query.measure.label);
+                const dims = query.dimensions || [];
+                const unit = query.unit;
+                const res = await runCube(measureExpr, dims, query.measure.label, unit);
                 if (!res.hasData) {
                     addMessage("ℹ️ לא נמצאו נתונים לשאלה זו (ייתכן שאין נתונים, או שהסינון/התאריך מצמצם הכל)");
                     return;
                 }
-                // The user's selector wins; "auto" falls back to the model's suggestion.
-                const chart = (chartOverride && chartOverride !== "auto") ? chartOverride : (query.chart || "table");
-                if (chart === "table") {
-                    addPanel(tableHtml(res.columns, res.rows, res.sizeY, 10));
+                const tblOpts = { nDims: dims.length, unit: unit };
+                const chart = query.chart || "table";
+                // Only draw a chart that actually fits the result shape; otherwise table.
+                if (chart !== "table" && !chartFits(chart, dims.length, 1)) {
+                    addMessage("ℹ️ אי אפשר להציג את התצוגה המבוקשת לנתון הזה (חסר פילוח מתאים) — מציג כטבלה.");
+                    addPanel(tableHtml(res.columns, res.rows, res.sizeY, 10, tblOpts));
+                } else if (chart === "table") {
+                    addPanel(tableHtml(res.columns, res.rows, res.sizeY, 10, tblOpts));
                 } else {
-                    renderChart(chart, query.dimensions, measureExpr, query.measure.label, res);
+                    renderChart(chart, dims, measureExpr, query.measure.label, res, unit);
                 }
             }
 
@@ -427,7 +484,8 @@ define(["qlik"], function(qlik) {
                     const response = await fetch(backendUrl + "/ask", {
                         method: "POST", mode: "cors", credentials: "omit",
                         headers: { "Content-Type": "application/json", "X-Backend-Token": backendToken },
-                        body: JSON.stringify({ question: question, app_id: appId })
+                        // Send the question with recent conversation context (follow-ups).
+                        body: JSON.stringify({ question: buildContextualQuestion(question), app_id: appId })
                     });
 
                     if (!response.ok) {
@@ -440,6 +498,8 @@ define(["qlik"], function(qlik) {
 
                     // Analysis mode → two-step flow.
                     if (query.mode === "analysis" && Array.isArray(query.queries) && query.queries.length) {
+                        history.push({ question: question, detail: summarizeQuery(query) });
+                        if (history.length > 8) history = history.slice(-8);
                         await runAnalysis(question, query);
                         return;
                     }
@@ -449,7 +509,9 @@ define(["qlik"], function(qlik) {
                         addMessage(query.note ? "ℹ️ " + query.note : "❌ Invalid response from backend");
                         return;
                     }
-                    await runQuery(query, chartSelect.value);
+                    history.push({ question: question, detail: summarizeQuery(query) });
+                    if (history.length > 8) history = history.slice(-8);
+                    await runQuery(query);
 
                 } catch (error) {
                     console.error("Error:", error);
@@ -465,6 +527,14 @@ define(["qlik"], function(qlik) {
             button.addEventListener("click", sendMessage);
             input.addEventListener("keypress", (e) => {
                 if (e.key === "Enter") sendMessage();
+            });
+
+            // "New conversation" — clear memory + transcript, keep the format selector.
+            resetBtn.addEventListener("click", () => {
+                if (isLoading) return;
+                history = [];
+                messagesDiv.innerHTML = "";
+                addMessage(ui.welcome);
             });
 
             // Welcome message (app-aware)
