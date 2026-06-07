@@ -115,8 +115,40 @@ define(["qlik"], function(qlik) {
             inputArea.appendChild(input);
             inputArea.appendChild(button);
 
+            // Output-format selector. "auto" = let the model decide; otherwise the
+            // user forces a specific Qlik visualization type.
+            const CHART_OPTIONS = [
+                ["auto", "אוטומטי (לפי השאלה)"],
+                ["table", "טבלה"],
+                ["barchart", "גרף עמודות"],
+                ["linechart", "גרף קו"],
+                ["piechart", "גרף עוגה"],
+                ["combochart", "גרף משולב"],
+                ["scatterplot", "תרשים פיזור"],
+                ["kpi", "מדד (KPI)"],
+                ["gauge", "מד מחוג"],
+                ["treemap", "מפת עץ"],
+                ["heatmap", "מפת חום"],
+                ["pivot-table", "טבלת ציר"],
+                ["waterfallchart", "תרשים מפל"],
+                ["histogram", "היסטוגרמה"],
+                ["distributionplot", "תרשים התפלגות"],
+                ["boxplot", "תרשים קופסה"]
+            ];
+            const formatBar = document.createElement("div");
+            formatBar.style.cssText = "display:flex; align-items:center; gap:8px; padding:8px 16px; background:white; border-top:1px solid #eee;";
+            const fbLabel = document.createElement("span");
+            fbLabel.textContent = "תצוגה:";
+            fbLabel.style.cssText = "color:#666; font-weight:600; font-size:13px; white-space:nowrap;";
+            const chartSelect = document.createElement("select");
+            chartSelect.style.cssText = "flex:1; padding:6px 8px; border:1px solid #ddd; border-radius:6px; font-family:inherit; font-size:13px; background:white;";
+            CHART_OPTIONS.forEach(function(opt){ const o=document.createElement("option"); o.value=opt[0]; o.textContent=opt[1]; chartSelect.appendChild(o); });
+            formatBar.appendChild(fbLabel);
+            formatBar.appendChild(chartSelect);
+
             container.appendChild(header);
             container.appendChild(messagesDiv);
+            container.appendChild(formatBar);
             container.appendChild(inputArea);
 
             $element.append(container);
@@ -230,8 +262,10 @@ define(["qlik"], function(qlik) {
                 });
             }
 
-            // Render a native Qlik chart into a fresh bubble.
-            function renderChart(chartType, dimensions, measureExpr, measureLabel) {
+            // Render a native Qlik chart into a fresh bubble. Supports any Qlik
+            // visualization type; if the type doesn't fit the data, it removes the
+            // empty chart and falls back to a table (using the already-fetched res).
+            function renderChart(chartType, dimensions, measureExpr, measureLabel, res) {
                 const chartId = "chart_" + Date.now() + "_" + Math.floor(Math.random() * 10000);
                 const box = document.createElement("div");
                 box.style.cssText = "background:white; border:1px solid #e0e0e0; border-radius:8px; padding:8px; width:92%;";
@@ -250,7 +284,11 @@ define(["qlik"], function(qlik) {
                 cols.push({ qDef: { qDef: measureExpr }, qLabel: measureLabel });
                 qApp.visualization.create(chartType, cols, {})
                     .then(v => v.show(chartId))
-                    .catch(e => addMessage("⚠️ לא ניתן לצייר גרף: " + (e && e.message ? e.message : e)));
+                    .catch(e => {
+                        wrap.remove();
+                        addMessage("⚠️ סוג התצוגה \"" + chartType + "\" לא מתאים לנתונים האלה — מציג טבלה במקום.");
+                        if (res && res.hasData) addPanel(tableHtml(res.columns, res.rows, res.sizeY, 10));
+                    });
             }
 
             // Build an HTML table string from columns + rows.
@@ -352,20 +390,24 @@ define(["qlik"], function(qlik) {
             }
 
             // Run a single query (lookup mode): chart, table, or "no data".
-            async function runQuery(query) {
+            // chartOverride: user's chosen output type ("auto" = use the model's choice).
+            async function runQuery(query, chartOverride) {
                 addMessage("📊 " + (query.interpretation || "מעבד..."));
                 const measureExpr = injectFilters(query.measure.expression, query.filters);
                 if (query.filters && query.filters.length) {
                     addMessage("🔎 סינון: " + query.filters.map(f => f.field + " = " + f.value).join(", "));
                 }
                 const res = await runCube(measureExpr, query.dimensions || [], query.measure.label);
-                const wantChart = query.chart && query.chart !== "table" && (query.dimensions || []).length >= 1;
                 if (!res.hasData) {
                     addMessage("ℹ️ לא נמצאו נתונים לשאלה זו (ייתכן שאין נתונים, או שהסינון/התאריך מצמצם הכל)");
-                } else if (wantChart) {
-                    renderChart(query.chart, query.dimensions, measureExpr, query.measure.label);
-                } else {
+                    return;
+                }
+                // The user's selector wins; "auto" falls back to the model's suggestion.
+                const chart = (chartOverride && chartOverride !== "auto") ? chartOverride : (query.chart || "table");
+                if (chart === "table") {
                     addPanel(tableHtml(res.columns, res.rows, res.sizeY, 10));
+                } else {
+                    renderChart(chart, query.dimensions, measureExpr, query.measure.label, res);
                 }
             }
 
@@ -407,7 +449,7 @@ define(["qlik"], function(qlik) {
                         addMessage(query.note ? "ℹ️ " + query.note : "❌ Invalid response from backend");
                         return;
                     }
-                    await runQuery(query);
+                    await runQuery(query, chartSelect.value);
 
                 } catch (error) {
                     console.error("Error:", error);
