@@ -21,6 +21,10 @@ define(["qlik"], function(qlik) {
             // works on every app. The backend picks the matching schema by app_id.
             const qApp = qlik.currApp(this);
             const appId = qApp.id;
+            // App title — sent to the backend so it can resolve the right schema by name
+            // even when a publish/copy gives the app a new id. Best-effort, async.
+            let appName = (qApp.model && qApp.model.layout && qApp.model.layout.qTitle) || "";
+            try { qApp.getAppLayout(function(l){ if (l && l.qTitle) appName = l.qTitle; }); } catch (e) {}
 
             // Per-app UI text (placeholder + welcome). Falls back to a generic prompt
             // so a brand-new app still shows something sensible.
@@ -65,11 +69,19 @@ define(["qlik"], function(qlik) {
             const headerTitle = document.createElement("h2");
             headerTitle.style.cssText = "margin:0; font-size:18px;";
             headerTitle.textContent = "💬 שאל את הנתונים";
+            const btnStyle = "background:rgba(255,255,255,0.2); color:white; border:1px solid rgba(255,255,255,0.45); border-radius:6px; padding:5px 10px; cursor:pointer; font-size:12px; font-family:inherit; white-space:nowrap;";
+            const exportBtn = document.createElement("button");
+            exportBtn.textContent = "⬇ ייצוא";
+            exportBtn.style.cssText = btnStyle;
             const resetBtn = document.createElement("button");
             resetBtn.textContent = "🔄 שיחה חדשה";
-            resetBtn.style.cssText = "background:rgba(255,255,255,0.2); color:white; border:1px solid rgba(255,255,255,0.45); border-radius:6px; padding:5px 10px; cursor:pointer; font-size:12px; font-family:inherit; white-space:nowrap;";
+            resetBtn.style.cssText = btnStyle;
+            const headerBtns = document.createElement("div");
+            headerBtns.style.cssText = "display:flex; gap:6px;";
+            headerBtns.appendChild(exportBtn);
+            headerBtns.appendChild(resetBtn);
             header.appendChild(headerTitle);
-            header.appendChild(resetBtn);
+            header.appendChild(headerBtns);
 
             // Messages area
             const messagesDiv = document.createElement("div");
@@ -135,6 +147,8 @@ define(["qlik"], function(qlik) {
             // user's question + a compact description of the query that was built, so a
             // follow-up ("ורק לנשים", "ולמה ירד?") can be resolved against prior context.
             let history = [];
+            // Full transcript for export (debugging): question + raw query JSON + result.
+            let transcript = [];
 
             // Prepend recent conversation context to a question (follow-up support).
             function buildContextualQuestion(q) {
@@ -398,7 +412,7 @@ define(["qlik"], function(qlik) {
             }
 
             // Run the planned cuts, then ask the backend to interpret the real numbers.
-            async function runAnalysis(question, plan) {
+            async function runAnalysis(question, plan, turn) {
                 addMessage("🔍 " + (plan.plan_intro || plan.interpretation || "מנתח את הנתונים..."));
 
                 const queries = Array.isArray(plan.queries) ? plan.queries : [];
@@ -417,8 +431,10 @@ define(["qlik"], function(qlik) {
                     items.push({ label: label, res: res });
                 }
 
+                if (turn) turn.cuts = results;
                 if (!results.some(r => r.rows && r.rows.length)) {
                     addMessage("ℹ️ לא נמצאו נתונים לניתוח הזה.");
+                    if (turn) turn.result = "אין נתונים לניתוח";
                     return;
                 }
 
@@ -427,7 +443,7 @@ define(["qlik"], function(qlik) {
                     const resp = await fetch(backendUrl + "/interpret", {
                         method: "POST", mode: "cors", credentials: "omit",
                         headers: { "Content-Type": "application/json", "X-Backend-Token": backendToken },
-                        body: JSON.stringify({ question: question, app_id: appId, results: results })
+                        body: JSON.stringify({ question: question, app_id: appId, app_name: appName, results: results })
                     });
                     if (!resp.ok) { const e = await resp.json(); throw new Error(e.error || "interpret error"); }
                     analysis = (await resp.json()).analysis;
@@ -435,6 +451,7 @@ define(["qlik"], function(qlik) {
                     addMessage("⚠️ הניתוח נכשל: " + e.message);
                 }
 
+                if (turn) turn.result = analysis || "interpret failed";
                 if (analysis) renderAnalysisCard(analysis);
                 renderSupporting(items);
             }
@@ -442,7 +459,7 @@ define(["qlik"], function(qlik) {
             // Run a single query (lookup mode). The MODEL decides the output format
             // via query.chart (table or a specific chart); we just render it, with a
             // graceful fallback to a table if the chosen chart doesn't fit the data.
-            async function runQuery(query) {
+            async function runQuery(query, turn) {
                 addMessage("📊 " + (query.interpretation || "מעבד..."));
                 const measureExpr = ignoreSelections(injectFilters(query.measure.expression, query.filters));
                 if (query.filters && query.filters.length) {
@@ -451,10 +468,13 @@ define(["qlik"], function(qlik) {
                 const dims = query.dimensions || [];
                 const unit = query.unit;
                 const res = await runCube(measureExpr, dims, query.measure.label, unit);
+                if (turn) turn.executed = measureExpr;
                 if (!res.hasData) {
                     addMessage("ℹ️ לא נמצאו נתונים לשאלה זו (ייתכן שאין נתונים, או שהסינון/התאריך מצמצם הכל)");
+                    if (turn) turn.result = "אין נתונים";
                     return;
                 }
+                if (turn) turn.result = { columns: res.columns, rows: res.rows.slice(0, 30) };
                 const tblOpts = { nDims: dims.length, unit: unit };
                 const chart = query.chart || "table";
                 // Only draw a chart that actually fits the result shape; otherwise table.
@@ -479,13 +499,15 @@ define(["qlik"], function(qlik) {
 
                 addMessage(question, true);
                 input.value = "";
+                const turn = { question: question, time: new Date().toLocaleString("he-IL") };
+                transcript.push(turn);
 
                 try {
                     const response = await fetch(backendUrl + "/ask", {
                         method: "POST", mode: "cors", credentials: "omit",
                         headers: { "Content-Type": "application/json", "X-Backend-Token": backendToken },
                         // Send the question with recent conversation context (follow-ups).
-                        body: JSON.stringify({ question: buildContextualQuestion(question), app_id: appId })
+                        body: JSON.stringify({ question: buildContextualQuestion(question), app_id: appId, app_name: appName })
                     });
 
                     if (!response.ok) {
@@ -494,28 +516,31 @@ define(["qlik"], function(qlik) {
                     }
 
                     const query = (await response.json()).query;
-                    if (!query) { addMessage("❌ Invalid response from backend"); return; }
+                    turn.query = query;
+                    if (!query) { addMessage("❌ Invalid response from backend"); turn.result = "invalid response"; return; }
 
                     // Analysis mode → two-step flow.
                     if (query.mode === "analysis" && Array.isArray(query.queries) && query.queries.length) {
                         history.push({ question: question, detail: summarizeQuery(query) });
                         if (history.length > 8) history = history.slice(-8);
-                        await runAnalysis(question, query);
+                        await runAnalysis(question, query, turn);
                         return;
                     }
 
                     // Lookup mode. A null measure with a note = supported-but-not-yet-implemented.
                     if (!query.measure) {
                         addMessage(query.note ? "ℹ️ " + query.note : "❌ Invalid response from backend");
+                        turn.result = "note: " + (query.note || "invalid");
                         return;
                     }
                     history.push({ question: question, detail: summarizeQuery(query) });
                     if (history.length > 8) history = history.slice(-8);
-                    await runQuery(query);
+                    await runQuery(query, turn);
 
                 } catch (error) {
                     console.error("Error:", error);
                     addMessage(`❌ ${error.message}`);
+                    turn.result = "error: " + error.message;
                 } finally {
                     isLoading = false;
                     button.disabled = false;
@@ -533,9 +558,51 @@ define(["qlik"], function(qlik) {
             resetBtn.addEventListener("click", () => {
                 if (isLoading) return;
                 history = [];
+                transcript = [];
                 messagesDiv.innerHTML = "";
                 addMessage(ui.welcome);
             });
+
+            // Export the full transcript (question + generated query + result) as a text
+            // file, so issues ("illogical answers") can be shared for diagnosis.
+            function exportChat() {
+                if (!transcript.length) { addMessage("ℹ️ אין עדיין שיחה לייצא."); return; }
+                const lines = [];
+                lines.push("=== Qlik Chatbot Export ===");
+                lines.push("App: " + (appName || "") + "  (id: " + appId + ")");
+                lines.push("Exported: " + new Date().toLocaleString("he-IL"));
+                lines.push("Turns: " + transcript.length);
+                lines.push("");
+                transcript.forEach(function (t, i) {
+                    lines.push("──────────────────────────────");
+                    lines.push("[" + (i + 1) + "] " + (t.time || "") + "  שאלה: " + t.question);
+                    if (t.query) lines.push("query: " + JSON.stringify(t.query));
+                    if (t.executed) lines.push("executed: " + t.executed);
+                    if (t.cuts) lines.push("cuts: " + JSON.stringify(t.cuts));
+                    if (t.result !== undefined) lines.push("result: " + (typeof t.result === "string" ? t.result : JSON.stringify(t.result)));
+                    lines.push("");
+                });
+                const text = lines.join("\n");
+                try {
+                    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = "chat_export_" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".txt";
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+                } catch (e) {
+                    // Fallback: show the text in a selectable box to copy manually.
+                    const box = document.createElement("textarea");
+                    box.value = text;
+                    box.style.cssText = "width:94%; height:200px; font-size:11px; direction:ltr;";
+                    addPanel(box);
+                    box.focus(); box.select();
+                }
+            }
+            exportBtn.addEventListener("click", exportChat);
 
             // Welcome message (app-aware)
             addMessage(ui.welcome);

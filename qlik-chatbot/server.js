@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
-const { PROMPTS, DEFAULT_APP_ID } = require('./prompts');
+const { PROMPTS, DEFAULT_APP_ID, resolveEntry } = require('./prompts');
 
 const app = express();
 app.use(express.json());
@@ -123,16 +123,16 @@ function logUsage(endpoint, appName, usage, extra = {}) {
 }
 
 app.post('/ask', rateLimit, requireToken, async (req, res) => {
-  const { question, app_id } = req.body;
+  const { question, app_id, app_name } = req.body;
 
   if (!question) {
     return res.status(400).json({ error: 'Question is required' });
   }
 
-  // Pick the system prompt for the app the extension is embedded in.
-  const entry = PROMPTS[app_id] || PROMPTS[DEFAULT_APP_ID];
+  // Pick the prompt by app_id; fall back to name keyword (survives publish/copy → new id).
+  const entry = resolveEntry(app_id, app_name);
   if (!PROMPTS[app_id]) {
-    console.warn(`⚠️ Unknown app_id "${app_id}" — falling back to "${entry.name}"`);
+    console.warn(`⚠️ Unknown app_id "${app_id}" (name="${app_name || ''}") — resolved to "${entry.name}"`);
   }
 
   try {
@@ -159,13 +159,13 @@ app.post('/ask', rateLimit, requireToken, async (req, res) => {
 // Qlik → sends the resulting tables here. Gemini (analyst persona) reasons over
 // the real numbers and returns a structured analysis.
 app.post('/interpret', rateLimit, requireToken, async (req, res) => {
-  const { question, app_id, results } = req.body;
+  const { question, app_id, app_name, results } = req.body;
 
   if (!question || !Array.isArray(results)) {
     return res.status(400).json({ error: 'question and results[] are required' });
   }
 
-  const entry = PROMPTS[app_id] || PROMPTS[DEFAULT_APP_ID];
+  const entry = resolveEntry(app_id, app_name);
   if (!entry.analystPrompt) {
     return res.status(400).json({ error: `Analysis not supported for app "${entry.name}"` });
   }

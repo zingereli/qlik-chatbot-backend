@@ -23,7 +23,14 @@
 // ──────────────────────────────────────────────────────────────────────────
 
 const CHERUM_APP_ID = '872ce203-b200-48ef-9582-4f7399299684';
-const EMPLOYMENT_APP_ID = '010cf675-ff63-4b8a-b700-120d16395ffc';
+const EMPLOYMENT_APP_ID = '010cf675-ff63-4b8a-b700-120d16395ffc';          // DEV (shared)
+const EMPLOYMENT_MANAGED_APP_ID = '89e1750d-83c2-4df5-81ee-db900590bf78';  // Public Dashboards (managed) — published copy gets a new ID
+// Match an app to its prompt by name keyword when the app_id is unknown (e.g. a
+// fresh publish/copy creates a new ID). Keeps the chatbot working across republishes.
+const NAME_MATCHERS = [
+  { test: /תעסוקה|פריון|employment/i, appId: EMPLOYMENT_APP_ID },
+  { test: /חירום|emergency/i, appId: CHERUM_APP_ID }
+];
 
 // ── App 1: "חירום" (emergency management) — EAV model (val_int + madad/src) ──
 const CHERUM_PROMPT = `You are a Qlik expert for an Israeli emergency-management app ("חירום").
@@ -127,13 +134,9 @@ DIMENSIONS (use the field name exactly):
 const EMPLOYMENT_PROMPT = `You are a Qlik expert for an Israeli "Employment & Productivity" dashboard ("תעסוקה ופריון").
 The user asks questions in Hebrew. Return ONLY valid JSON (no markdown, no text).
 
-DOMAIN CONTEXT (for understanding questions, not for inventing fields):
-This dashboard follows the Aaron Institute / JDC-TEVET measurement framework. The three
-top-level outcome metrics ("מדדי על") are: שיעור תעסוקה (employment rate), שכר (wages),
-ופריון (productivity). They are driven by three "capitals": הון אנושי (human capital, e.g.
-education/skills), הון ציבורי (public), הון עיסקי (business). Most user questions are about
-employment rate, wages, education levels, and tech employment, broken down by population group.
-Default to age 25-66, national (ארצי), total population — that is the "headline" view.
+DOMAIN: Israel's employment & productivity dashboard. Questions are about employment rate,
+wages, education and tech employment, broken down by population group. Headline defaults:
+age 25-66, national (ארצי), total population.
 
 TWO MODES — first decide "mode":
 - "query"  — a direct lookup ("מה שיעור התעסוקה של נשים ערביות", "שכר לפי מגזר", "מגמה לאורך השנים").
@@ -211,9 +214,12 @@ ADJUSTMENT RULES (apply in order):
    set modifier AND add it to dimensions[]. Example: "לפי מגזר" → remove sector pin, add sector dim.
 6. FILTER to a specific value ("של נשים", "במגזר ערבים", "בגיל 25-34"): REPLACE that field's pin
    with the user's exact value inside the set. Example gender: gender={'נשים'}.
-7. YEARS — the data covers 2012–2024; the latest yearly value is 2024 (salary kpis: 2023).
-   NEVER use Qlik variables or $(...) expressions (e.g. $(vMaxYear) does NOT exist and returns
-   empty). Always write explicit integer years.
+7. YEARS — ACTUAL data is 2014–2024 (latest actual = 2024; salary/education kpis: 2023).
+   The field also contains FUTURE / TARGET years 2025–2035 (יעדי ועדת 2030 projections) — these
+   are NOT real data. "latest / current / עדכני" ALWAYS means is_yearly_latest={1} (→ 2024/2023),
+   NEVER Max(year). Never produce a future year (2025+) unless the user explicitly asks about
+   יעד / תחזית / target. NEVER use Qlik variables or $(...) (e.g. $(vMaxYear) returns empty).
+   Always write explicit integer years.
    - Specific year (e.g. 2023): replace is_yearly_latest={1} with [fact_employment_productivity.year]={2023}.
    - "last N years" / "שלוש שנים אחרונות": list the explicit years AND pin period_type={'שנתי'},
      remove is_yearly_latest. E.g. last 3 years → period_type={'שנתי'}, [fact_employment_productivity.year]={2022,2023,2024},
@@ -231,6 +237,12 @@ ADJUSTMENT RULES (apply in order):
      location={'<name>'} (the name itself fixes the level, district or cluster).
 9. Targets: only add actual_target_flag if the user explicitly says יעד/יעדים → actual_target_flag={'יעד'}.
    Otherwise NEVER add actual_target_flag (the supported kpis have an empty flag; pinning it returns 0).
+10. META follow-ups about the PREVIOUS answer ("באיזו שנה מדובר?", "לאיזו תקופה?", "באיזה גיל?",
+   "לאיזה מגזר?"): the user wants to SEE which value of that field the previous result refers to.
+   Re-use the previous measure EXACTLY (keep is_yearly_latest / all pins) and ADD that field as a
+   dimension so its value is shown — e.g. "באיזו שנה?" → keep is_yearly_latest={1}, add
+   [fact_employment_productivity.year] as dimension (returns the actual latest year, 2024 — NOT a
+   future/target year). Do NOT use Max(...) and do NOT drop the latest flag.
 
 GROUPABLE / FILTERABLE FIELDS (exact names):
 - מגזר (sector): sector | מגדר (gender): gender | קבוצת גיל (age group): age_group
@@ -255,9 +267,6 @@ When the user names one of these six groups, set BOTH gender and sector pins:
 - "נשים יהודיות שאינן חרדיות"      → gender={'נשים'},  sector={'יהודים שאינם חרדים'}
 - "גברים יהודים שאינם חרדים"       → gender={'גברים'}, sector={'יהודים שאינם חרדים'}
 (For employment-rate / salary / tech kpis the Jewish-non-Haredi sector is "יהודים שאינם חרדים".)
-A "תמונת מצב" / "פרופיל" / "סקירה" about one group → use mode "analysis" with a profile of
-SEVERAL DIFFERENT kpis for that group (employment rate + salary + tech share + first-degree %),
-each cut pinned to the group's gender+sector. See the profile example below.
 
 SUPPORTED KPIs (rates / percentages / salary — copy verbatim into kpi={'...'}):
 - שיעור תעסוקה            (age default 25-66)
@@ -313,6 +322,8 @@ A: {"mode":"analysis","interpretation":"תמונת מצב על גברים חרד
   {"label":"שיעור מועסקים במשרות טק","measure":{"expression":"Avg({<kpi={'שיעור מועסקים במשרות טק'}, is_yearly_latest={1}, location_type={'ארצי'}, sector={'חרדים'}, gender={'גברים'}, education_level={'סה"כ'}, age_group={'25-66'}>} metric_value)","label":"שיעור מועסקים במשרות טק"},"dimensions":[],"chart":"table"},
   {"label":"אחוז בעלי תואר ראשון","measure":{"expression":"Avg({<kpi={'אחוז בעלי תואר ראשון בקרב בני 25-34'}, is_yearly_latest={1}, location_type={'ארצי'}, sector={'חרדים'}, gender={'גברים'}>} metric_value)","label":"אחוז בעלי תואר ראשון"},"dimensions":[],"chart":"table"}
 ]}
+Q: "באיזו שנה מדובר?"   (META follow-up after a 'latest' answer → keep latest flag, add year dim)
+A: {"mode":"query","interpretation":"השנה של הנתון העדכני (שיעור תעסוקה)","measure":{"expression":"Avg({<kpi={'שיעור תעסוקה'}, is_yearly_latest={1}, location_type={'ארצי'}, sector={'סה"כ אוכלוסייה'}, gender={'סה"כ'}, education_level={'סה"כ'}, age_group={'25-66'}>} metric_value)","label":"שיעור תעסוקה"},"dimensions":[{"field":"[fact_employment_productivity.year]","label":"שנה"}],"filters":[],"chart":"table","unit":"percent","note":null}
 Q: "שיעור תעסוקה לפי אזור"   (regional → location_type מחוז, group by location)
 A: {"interpretation":"שיעור תעסוקה לפי מחוז, גיל 25-66, עדכני","measure":{"expression":"Avg({<kpi={'שיעור תעסוקה'}, is_yearly_latest={1}, location_type={'מחוז'}, sector={'סה"כ אוכלוסייה'}, gender={'סה"כ'}, education_level={'סה"כ'}, age_group={'25-66'}>} metric_value)","label":"שיעור תעסוקה"},"dimensions":[{"field":"location","label":"אזור"}],"filters":[],"chart":"barchart","note":null}
 Q: "כמה משרות טק יש?"   (count kpi → unsupported)
@@ -363,11 +374,25 @@ the numbers provided. Return ONLY valid JSON of shape:
 {"headline":"...","summary":"...","findings":[{"point":"...","evidence":"..."}],"caveat":"..."}
 Never invent figures; frame as association, not causation; Hebrew only, numbers in digits.`;
 
+const EMPLOYMENT_ENTRY = { name: 'תעסוקה ופריון', systemPrompt: EMPLOYMENT_PROMPT, analystPrompt: EMPLOYMENT_ANALYST_PROMPT };
+
 const PROMPTS = {
   [CHERUM_APP_ID]: { name: 'חירום', systemPrompt: CHERUM_PROMPT, analystPrompt: CHERUM_ANALYST_PROMPT },
-  [EMPLOYMENT_APP_ID]: { name: 'תעסוקה ופריון', systemPrompt: EMPLOYMENT_PROMPT, analystPrompt: EMPLOYMENT_ANALYST_PROMPT },
+  [EMPLOYMENT_APP_ID]: EMPLOYMENT_ENTRY,            // DEV copy
+  [EMPLOYMENT_MANAGED_APP_ID]: EMPLOYMENT_ENTRY,    // published (managed) copy
 };
 
 const DEFAULT_APP_ID = CHERUM_APP_ID;
 
-module.exports = { PROMPTS, DEFAULT_APP_ID, CHERUM_APP_ID, EMPLOYMENT_APP_ID };
+// Resolve an app to its prompt entry: exact app_id first; else match by app name
+// keyword (survives publish/copy → new app_id); else fall back to DEFAULT.
+function resolveEntry(appId, appName) {
+  if (PROMPTS[appId]) return PROMPTS[appId];
+  if (appName) {
+    const m = NAME_MATCHERS.find(n => n.test.test(appName));
+    if (m && PROMPTS[m.appId]) return PROMPTS[m.appId];
+  }
+  return PROMPTS[DEFAULT_APP_ID];
+}
+
+module.exports = { PROMPTS, DEFAULT_APP_ID, CHERUM_APP_ID, EMPLOYMENT_APP_ID, resolveEntry };
